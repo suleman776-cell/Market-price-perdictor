@@ -3,22 +3,37 @@ import pickle
 import pandas as pd
 import traceback
 from datetime import datetime
+import os
 
 app = Flask(__name__)
 
-# Model Load
+# --- Model Load ---
+# Ensure your 'ecommerce_model.pkl' is in the same directory
 try:
-    with open("ecommerce_model.pkl", "rb") as f:
+    model_path = "ecommerce_model.pkl"
+    with open(model_path, "rb") as f:
         model = pickle.load(f)
 except Exception as e:
-    print(f"Model Load Error: {e}")
+    print(f"Model Load Error: {e}. Make sure ecommerce_model.pkl exists.")
+    model = None
 
-# Dataset se nikaale gaye complete mappings
+# --- Logical Mappings ---
 MAPS = {
-    'category': {'Electronics': 0, 'Fashion': 1, 'Accessories': 2, 'Computers': 3, 'Wearables': 4},
-    'brand': {'Samsung': 0, 'Nike': 1, 'JBL': 2, 'HP': 3, 'Apple': 4, 'Generic': 5, 'FitPro': 6, 'Xiaomi': 7, 'Dell': 8, 'Adidas': 9},
-    'platform': {'Souq': 0, 'Jumia': 1, 'Amazon': 2},
-    'city': {'Cairo': 0, 'Alexandria': 1, 'Casablanca': 2, 'Dubai': 3, 'Riyadh': 4, 'Giza': 5}
+    'category_list': ['Electronics', 'Fashion', 'Accessories', 'Computers', 'Wearables'],
+    'brands_by_category': {
+        'Electronics': ['Samsung', 'Apple', 'Xiaomi', 'JBL'],
+        'Fashion': ['Nike', 'Adidas', 'Generic'],
+        'Accessories': ['JBL', 'Generic'],
+        'Computers': ['HP', 'Dell', 'Apple'],
+        'Wearables': ['FitPro', 'Apple', 'Samsung']
+    },
+    'category_enc': {'Electronics': 0, 'Fashion': 1, 'Accessories': 2, 'Computers': 3, 'Wearables': 4},
+    'brand_enc': {
+        'Samsung': 0, 'Nike': 1, 'JBL': 2, 'HP': 3, 'Apple': 4, 
+        'Generic': 5, 'FitPro': 6, 'Xiaomi': 7, 'Dell': 8, 'Adidas': 9
+    },
+    'platform_enc': {'Souq': 0, 'Jumia': 1, 'Amazon': 2},
+    'city_enc': {'Cairo': 0, 'Alexandria': 1, 'Casablanca': 2, 'Dubai': 3, 'Riyadh': 4, 'Giza': 5}
 }
 
 CURRENCY_CONFIG = {
@@ -37,27 +52,30 @@ def home():
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
+        if model is None:
+            return render_template('index.html', error="Model file not found!", maps=MAPS)
+
         def safe_float(value, default=0.0):
             try:
                 return float(value) if value and str(value).strip() else default
             except:
                 return default
 
+        category_selected = request.form.get('category')
+        brand_selected = request.form.get('brand')
         city_selected = request.form.get('city')
-        now = datetime.now()
         qty = safe_float(request.form.get('quantity'), 1.0)
+        
+        now = datetime.now()
 
-        # 1. Input Data taiyar karein
         data_dict = {
-            'Product': 0, # Product names usually encoding mangte hain, agar training mein tha
-            'Category': MAPS['category'].get(request.form.get('category'), 0),
-            'Brand': MAPS['brand'].get(request.form.get('brand'), 0),
-            'Platform': MAPS['platform'].get(request.form.get('platform'), 0),
-            'City': MAPS['city'].get(city_selected, 0),
+            'Product': 0, 
+            'Category': MAPS['category_enc'].get(category_selected, 0),
+            'Brand': MAPS['brand_enc'].get(brand_selected, 5),
+            'Platform': MAPS['platform_enc'].get(request.form.get('platform'), 0),
+            'City': MAPS['city_enc'].get(city_selected, 0),
             'Quantity': qty,
-            'TotalAmount': 0, # NOTE: Agar model training mein Price predict kar raha tha, 
-                             # toh TotalAmount input feature nahi hona chahiye tha. 
-                             # Agar prediction galat aaye toh model retraining mein ise hata dein.
+            'TotalAmount': 0, 
             'Rating': safe_float(request.form.get('rating'), 4.0),
             'Reviews': safe_float(request.form.get('reviews'), 100.0),
             'Day': now.day,
@@ -67,20 +85,18 @@ def predict():
 
         input_df = pd.DataFrame([data_dict])
 
-        # 2. Sahi Feature Order (Zaroori Step)
+        # Feature Order handling
         try:
             expected_order = model.feature_names_in_
             input_df = input_df[expected_order]
         except AttributeError:
-            # Manually order agar model meta-data nahi de raha
             expected_order = ['Product', 'Category', 'Brand', 'Platform', 'City', 
                              'Quantity', 'TotalAmount', 'Rating', 'Reviews', 'Day', 'Month', 'year']
             input_df = input_df[expected_order]
 
-        # 3. Prediction
         prediction_usd = model.predict(input_df)[0]
 
-        # 4. Currency Conversion
+        # Currency Conversion logic
         curr = CURRENCY_CONFIG.get(city_selected, {'symbol': '$', 'rate': 1})
         final_price = float(prediction_usd) * curr['rate']
         formatted_price = f"{curr['symbol']} {final_price:,.2f}"
